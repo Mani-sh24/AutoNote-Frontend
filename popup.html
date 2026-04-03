@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { width: 340px; max-width: 100%; padding: 14px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1f2937; background: #f8fafc; margin: 0; }
+    .panel { display: grid; gap: 10px; }
+    .button-row { display: flex; gap: 10px; }
+    button { flex: 1; border: none; border-radius: 8px; background-color: #2563eb; color: #ffffff; padding: 10px 12px; font-size: 14px; font-weight: 600; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease; }
+    button:disabled { opacity: 0.6; cursor: default; transform: none; background-color: #94a3b8; }
+    button:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12); }
+    #status { margin: 0; font-size: 13px; color: #334155; }
+    .result-box { margin-top: 8px; background: #ffffff; border-radius: 10px; border: 1px solid #cbd5e1; padding: 10px; box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08); }
+    .result-box h2 { margin: 4px 0 8px; font-size: 14px; color: #0f172a; }
+    textarea { width: 100%; min-height: 120px; border-radius: 8px; border: 1px solid #cbd5e1; padding: 10px; resize: vertical; font-size: 13px; color: #0f172a; background: #f8fafc; }
+    #copy-summary { margin-top: 8px; background-color: #059669; }
+    #copy-summary:hover:not(:disabled) { box-shadow: 0 3px 10px rgba(5, 150, 105, 0.35); }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="button-row">
+      <button id="start">Start Capture</button>
+      <button id="stop" disabled>Stop Capture</button>
+    </div>
+
+    <p id="status">Ready</p>
+
+    <div class="result-box">
+      <h2>Server Summary <small style="font-weight: normal; color: #64748b;">(auto-downloads)</small></h2>
+      <textarea id="summary" readonly placeholder="No summary yet."></textarea>
+      <button id="copy-summary" disabled>Copy Summary</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
