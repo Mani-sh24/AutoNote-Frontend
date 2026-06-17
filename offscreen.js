@@ -1,141 +1,189 @@
 let stream = null;
-let recorder = null;
-let recordedChunks = [];
-let playbackAudio = null;
+let audioContext = null;
+let sourceNode = null;
+let processorNode = null;
+let mp3Encoder = null;
+let mp3Chunks = [];
+let isRecording = false;
+let isFinishing = false;
 
-const backend_url = "http://localhost:8000/upload-audio"; // IMPORTANT: NOT 0.0.0.0
+const BACKEND_URL = "http://localhost:8000/upload-audio";
+const MP3_BITRATE = 128;
+const BUFFER_SIZE = 4096;
 
-chrome.runtime.onMessage.addListener(async (msg) => {
-  if (msg.type === "START_CAPTURE") {
-    await startAudio(msg.streamId);
+function report(event, details = {}) {
+  return chrome.runtime.sendMessage({
+    type: "OFFSCREEN_EVENT",
+    event,
+    ...details
+  }).catch(() => undefined);
+}
+
+async function cleanup() {
+  isRecording = false;
+  isFinishing = false;
+
+  if (processorNode) {
+    processorNode.onaudioprocess = null;
+    processorNode.disconnect();
+  }
+  if (sourceNode) {
+    sourceNode.disconnect();
+  }
+  if (stream) {
+    stream.getTracks().forEach((track) => track.stop());
+  }
+  if (audioContext && audioContext.state !== "closed") {
+    await audioContext.close().catch(() => undefined);
   }
 
-  if (msg.type === "STOP_CAPTURE") {
-    stopAudio();
+  stream = null;
+  audioContext = null;
+  sourceNode = null;
+  processorNode = null;
+  mp3Encoder = null;
+  mp3Chunks = [];
+}
+
+function toMonoInt16(inputBuffer) {
+  const left = inputBuffer.getChannelData(0);
+  const right = inputBuffer.numberOfChannels > 1 ? inputBuffer.getChannelData(1) : left;
+  const pcm = new Int16Array(left.length);
+
+  for (let index = 0; index < left.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, (left[index] + right[index]) * 0.5));
+    pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
   }
-});
 
-async function startAudio(streamId) {
-  try {
-    // If already recording, stop previous session cleanly
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      stream = null;
-    }
+  return pcm;
+}
 
-    recordedChunks = [];
+function monitorTabAudio(event) {
+  const channels = Math.min(event.inputBuffer.numberOfChannels, event.outputBuffer.numberOfChannels);
+  for (let channel = 0; channel < channels; channel += 1) {
+    event.outputBuffer.getChannelData(channel).set(event.inputBuffer.getChannelData(channel));
+  }
 
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        mandatory: {
-          chromeMediaSource: "tab",
-          chromeMediaSourceId: streamId
-        }
-      }
-    });
+  if (!isRecording || !mp3Encoder) {
+    return;
+  }
 
-    // 🔊 Restore tab audio playback
-    playbackAudio = new Audio();
-    playbackAudio.srcObject = stream;
-    await playbackAudio.play();
-
-    recorder = new MediaRecorder(stream, {
-      mimeType: "audio/webm;codecs=opus"
-    });
-
-    recorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
-        recordedChunks.push(event.data);
-      }
-    };
-
-    recorder.onstop = async () => {
-      try {
-        const finalBlob = new Blob(recordedChunks, {
-          type: "audio/webm"
-        });
-
-        await uploadFullRecording(finalBlob);
-      } catch (err) {
-        console.error("Upload failed:", err);
-      }
-
-      cleanup();
-    };
-
-    recorder.start();
-    console.log("Recording started");
-
-  } catch (err) {
-    console.error("Start capture error:", err);
+  const encoded = mp3Encoder.encodeBuffer(toMonoInt16(event.inputBuffer));
+  if (encoded.length > 0) {
+    mp3Chunks.push(encoded);
   }
 }
 
-async function uploadFullRecording(blob) {
+async function uploadRecording(blob) {
   const formData = new FormData();
-  formData.append("file", blob, "full_recording.webm");
+  formData.append("file", blob, "tab_recording.mp3");
 
-  const response = await fetch(backend_url, {
+  const response = await fetch(BACKEND_URL, {
     method: "POST",
     body: formData
   });
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    chrome.runtime.sendMessage({ type: 'SERVER_ERROR', error: `HTTP ${response.status}: ${errorText}` });
-    throw new Error("Upload failed with status " + response.status);
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Server returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
   }
 
-  let summaryText = "";
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const json = await response.json();
+    return json.summary || json.Summary || json.transcript || JSON.stringify(json);
+  }
+
+  return response.text();
+}
+
+async function finishRecording() {
+  if (!isRecording || isFinishing) {
+    return;
+  }
+
+  isFinishing = true;
+  isRecording = false;
+  await report("CAPTURE_ENDED");
 
   try {
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const json = await response.json();
-      summaryText = json.Summary || json.summary || json.transcript || JSON.stringify(json);
-    } else {
-      summaryText = await response.text();
-    }
-  } catch (err) {
-    console.warn('Could not parse backend response as JSON/text', err);
-    summaryText = "(response parse failed)";
-  }
-
-  chrome.runtime.sendMessage({ type: 'SERVER_RESPONSE', summary: summaryText });
-  console.log("Full recording uploaded successfully", summaryText);
-}
-
-function stopAudio() {
-  try {
-    if (recorder && recorder.state === "recording") {
-      recorder.stop(); // triggers onstop
-    } else {
-      cleanup();
+    const finalChunk = mp3Encoder.flush();
+    if (finalChunk.length > 0) {
+      mp3Chunks.push(finalChunk);
     }
 
-    console.log("Stop requested");
-  } catch (err) {
-    console.error("Stop error:", err);
+    const recording = new Blob(mp3Chunks, { type: "audio/mpeg" });
+    if (!recording.size) {
+      throw new Error("No audio was captured from this tab.");
+    }
+
+    const summary = await uploadRecording(recording);
+    await report("UPLOAD_SUCCESS", { summary });
+  } catch (error) {
+    await report("UPLOAD_ERROR", { error: error.message });
+  } finally {
+    await cleanup();
+    await report("CLEANED_UP");
   }
 }
 
-function cleanup() {
-  if (stream) {
-    stream.getTracks().forEach(track => track.stop());
-    stream = null;
+async function startAudio(streamId) {
+  if (!streamId) {
+    throw new Error("No tab audio stream was provided.");
+  }
+  if (!globalThis.lamejs?.Mp3Encoder) {
+    throw new Error("MP3 encoder failed to load.");
   }
 
-  if (playbackAudio) {
-    playbackAudio.pause();
-    playbackAudio.srcObject = null;
-    playbackAudio = null;
-  }
+  await cleanup();
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      mandatory: {
+        chromeMediaSource: "tab",
+        chromeMediaSourceId: streamId
+      }
+    }
+  });
 
-  recorder = null;
-  recordedChunks = [];
+  audioContext = new AudioContext();
+  sourceNode = audioContext.createMediaStreamSource(stream);
+  processorNode = audioContext.createScriptProcessor(BUFFER_SIZE, 2, 2);
+  mp3Encoder = new lamejs.Mp3Encoder(1, audioContext.sampleRate, MP3_BITRATE);
+  mp3Chunks = [];
+  isRecording = true;
+  isFinishing = false;
 
-  // Notify popup that recording has stopped
-  chrome.runtime.sendMessage({ type: 'RECORDING_STOPPED' });
+  processorNode.onaudioprocess = monitorTabAudio;
+  sourceNode.connect(processorNode);
+  processorNode.connect(audioContext.destination);
+  await audioContext.resume();
 
-  console.log("Capture fully stopped and cleaned up");
+  stream.getAudioTracks()[0]?.addEventListener("ended", () => {
+    finishRecording();
+  });
 }
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "OFFSCREEN_START_CAPTURE") {
+    startAudio(message.streamId)
+      .then(() => sendResponse({ ok: true }))
+      .catch(async (error) => {
+        await cleanup();
+        sendResponse({ ok: false, error: error.message });
+      });
+    return true;
+  }
+
+  if (message.type === "OFFSCREEN_STOP_CAPTURE") {
+    if (!isRecording) {
+      sendResponse({ ok: false, error: "There is no active recording." });
+      return false;
+    }
+
+    finishRecording();
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  return false;
+});

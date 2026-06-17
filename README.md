@@ -1,13 +1,14 @@
-# Chrome Audio Capture Extension
+# ScribeWave Chrome Extension
 
-A lightweight browser extension that captures audio from active browser tabs (e.g., meetings) and forwards it to a backend service for transcription and summarization.
+A lightweight browser extension that captures audio from an active tab, forwards it to a local backend for transcription and summarization, and keeps the finished summary available when the popup is reopened.
 
 ## What it does
 
 - Captures live audio from a browser tab using Chrome extension APIs.
-- Posts captured audio data to a Python backend.
+- Encodes captured audio as MP3 and posts it to a Python backend.
 - Backend uses NLP to generate an extractive meeting summary.
-- Returns the summary to the extension UI for user review.
+- Persists capture status and returned summaries in the popup between opens.
+- Supports copying or downloading a finished summary.
 
 ## Installation
 
@@ -15,20 +16,23 @@ A lightweight browser extension that captures audio from active browser tabs (e.
    ```bash
    git clone <repo-url>
    cd Transcriber
+   npm install
    ```
 2. Open Chrome and go to `chrome://extensions/`
 3. Enable Developer mode (top right)
 4. Click "Load unpacked" and choose this repository folder
 
+Chrome 116 or newer is required for background tab capture through an offscreen document.
+
 ## Usage
 
-- Open the extension popup to start/stop capturing tab audio.
-- The extension sends audio chunks to a Python backend endpoint.
-- The backend analyzes speech, runs NLP summarization, and sends back summary text.
-- Display returned summary in the extension UI.
+- Open the extension popup from a tab that is playing audio and click **Start capture**.
+- Click **Stop** when the segment is complete. The popup may be closed during recording or processing.
+- Review the returned summary, then use **Copy text** or **Download**.
+- Ensure the backend accepts `audio/mpeg` MP3 uploads at `http://localhost:8000/upload-audio`.
 
 ## Architecture
 
-- Frontend: Chrome extension (`manifest.json`, `popup.html`, `popup.js`, `offscreen.js`).
+- Frontend: Chrome extension (`manifest.json`, `popup.html`, `popup.css`, `popup.js`).
+- Capture lifecycle: background service worker (`background.js`) and offscreen recorder (`offscreen.js`).
 - Backend: Python service (not included here) exposes HTTP API for audio upload + summary output.
-

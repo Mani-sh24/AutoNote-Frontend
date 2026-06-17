@@ -11,6 +11,6 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "lamejs": "^1.2.1"
+    "@breezystack/lamejs": "^1.2.7"
   }
 }
